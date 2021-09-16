@@ -33,6 +33,7 @@ module Homebrew
         [`sudo`] `brew services cleanup`:
         Remove all unused services.
       EOS
+      flag "--file=", description: "Use the plist file from this location to start or run the service."
       switch "--all", description: "Run <subcommand> on all services."
     end
   end
@@ -40,11 +41,59 @@ module Homebrew
   def services
     args = services_args.parse
 
-    raise UsageError, "`brew services` is supported only on macOS!" unless OS.mac?
+    # pbpaste's exit status is a proxy for detecting the use of reattach-to-user-namespace
+    if ENV["HOMEBREW_TMUX"] && (File.exist?("/usr/bin/pbpaste") && !quiet_system("/usr/bin/pbpaste"))
+      raise UsageError,
+            "`brew services` cannot run under tmux!"
+    end
 
     # Keep this after the .parse to keep --help fast.
-    require_relative "../lib/services_cli"
+    require_relative "../lib/service"
+    require "utils"
 
-    Homebrew::ServicesCli.run!(args)
+    if !Service::ServicesCli.launchctl? && !Service::ServicesCli.systemctl?
+      raise UsageError,
+            "`brew services` is supported only on macOS or Linux (with systemd)!"
+    end
+
+    # Parse arguments.
+    subcommand, formula, custom_plist, = args.named
+
+    if custom_plist.present?
+      odeprecated "with file as last argument", "`--file=` to specify a plist file"
+    else
+      custom_plist = args.file
+    end
+
+    if ["list", "cleanup"].include?(subcommand)
+      raise UsageError, "The `#{subcommand}` subcommand does not accept a formula argument!" if formula
+      raise UsageError, "The `#{subcommand}` subcommand does not accept the --all argument!" if args.all?
+    end
+
+    target = if args.all?
+      Service::ServicesCli.available_services
+    elsif formula
+      Service::FormulaWrapper.new(Formulary.factory(formula))
+    end
+
+    ENV["DBUS_SESSION_BUS_ADDRESS"] = ENV["HOMEBREW_DBUS_SESSION_BUS_ADDRESS"] if Service::ServicesCli.systemctl?
+
+    # Dispatch commands and aliases.
+    case subcommand.presence
+    when nil, "list", "ls"
+      Service::Commands::List.run
+    when "cleanup", "clean", "cl", "rm"
+      Service::Commands::Cleanup.run
+    when "restart", "relaunch", "reload", "r"
+      Service::Commands::Restart.run(target, custom_plist, verbose: args.verbose?)
+    when "run"
+      Service::Commands::Run.run(target, verbose: args.verbose?)
+    when "start", "launch", "load", "s", "l"
+      Service::Commands::Start.run(target, custom_plist, verbose: args.verbose?)
+    when "stop", "unload", "terminate", "term", "t", "u"
+      Service::Commands::Stop.run(target, verbose: args.verbose?)
+    else
+      raise UsageError, "unknown subcommand: `#{subcommand}`"
+    end
   end
 end

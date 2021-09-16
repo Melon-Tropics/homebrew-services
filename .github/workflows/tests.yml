@@ -1,19 +1,29 @@
-name: GitHub Actions CI
+name: CI
 on:
   push:
     branches: master
   pull_request:
 jobs:
   tests:
-    runs-on: macOS-latest
+    name: Tests (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
+    - name: Enable linger
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        loginctl enable-linger $(whoami)
+        echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> $GITHUB_ENV
+
     - name: Set up Homebrew
       id: set-up-homebrew
       uses: Homebrew/actions/setup-homebrew@master
 
     - name: Cache Homebrew Bundler RubyGems
       id: cache
-      uses: actions/cache@v1
+      uses: actions/cache@v2.1.6
       with:
         path: ${{ steps.set-up-homebrew.outputs.gems-path }}
         key: ${{ runner.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
@@ -27,7 +37,7 @@ jobs:
 
     - name: Set up Ruby
       if: matrix.os == 'ubuntu-latest'
-      uses: actions/setup-ruby@master
+      uses: ruby/setup-ruby@master
       with:
         ruby-version: '2.6'
 
@@ -47,6 +57,15 @@ jobs:
         brew services list | grep redis
         sleep 5
         redis-cli INFO | grep uptime_in_seconds
+        
+    - name: Test restart command
+      run: |
+        brew services stop redis
+        sleep 5
+        brew services restart redis
+        brew services list | grep redis
+        sleep 5
+        redis-cli INFO | grep uptime_in_seconds        
 
     - name: Test stop command
       run: |
